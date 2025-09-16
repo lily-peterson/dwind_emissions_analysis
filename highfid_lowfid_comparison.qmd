@@ -1,0 +1,324 @@
+---
+title: "County-Level Emissions Analysis"
+format:
+  html:
+    code-fold: true
+    embed-resources: true
+jupyter: dwind
+---
+
+In this workbook, emissions offset potential for each county in the lower 48 states is estimated for a given level of distributed wind deployment using the long-run marginal emissions rate, or LRMER.
+
+The LRMER is an indication of the rate of emissions offset potential associated with marginal grid demand reduction. The LRMER is measured in grams CO2 per MWh. Here, an annualized average LRMER (specific to generating regions across the US) is multiplied by the annual energy production of distributed wind resources given a potential deployment scenario. In other words, distributed wind generation reduces grid demand, and the emissions impacts can be quantified using LRMER and AEP.
+
+The LRMER is calculated for 18 generation and emissions assessment (GEA) regions across the contiguous United States by Cambium 2023, an NREL model (https://www.nrel.gov/analysis/cambium.html). AEP data summed by county is retrieved from the NREL distributed wind model, which is then multiplied by the LRMER from the county's respective GEA. The following table lists LRMER values for each GEA in Cambium 2023.
+
+```{python}
+import pandas as pd
+import plotly.express as px
+import plotly.io as pio
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
+
+btmfom="btm"
+data_dir=f"data/{btmfom}"
+scenario="baseline_2035"
+geog="counties"
+
+if scenario == "baseline_2035":
+  LRMER_levelized = { #units kilotons CO2 per TWh at the point of enduse. from Cambium 2024!! LRMER workbook
+      "CAISO": 29.2,
+      "ERCOT": 68.8,
+      "FRCC": 180.2,
+      "ISONE": 46.4,
+      "MISO_Central": 68.2,
+      "MISO_North": 93.6,
+      "MISO_South": 117.9,
+      "NorthernGrid_East": 112.3,
+      "NorthernGrid_South": 114.5,
+      "NorthernGrid_West": 27.8,
+      "NYISO": 27.1,
+      "PJM_East": 168.4,
+      "PJM_West": 93.9,
+      "SERTP": 112.6,
+      "SPP_North": 67.2,
+      "SPP_South": 74.5,
+      "WestConnect_North": 81.6,
+      "WestConnect_South": 113.5
+  }
+
+df_LRMER = pd.DataFrame(list(LRMER_levelized.items()), columns=["GEA", "LRMER (kgCO2/kWh)"])
+df_LRMER
+
+```
+
+Please note that annualized LRMER values are modeled estimates with lower fidelity than daily or hourly marginal emissions rate data. This notebook was created for the purpose of comparative emissions analysis across counties, and resulting emissions potential estimates are best interpreted in this context. These preliminary results update our [2022 study](https://www.nrel.gov/analysis/distributed-wind-futures.html).
+
+Cambium GEA regions are also displayed spatially, for clarification of the table shown above.
+
+```{python}
+
+# import dataset
+df = pd.read_csv(f"{data_dir}/btm.{scenario}.{geog}.csv")
+#df_fom = pd.read_csv(f"{data_dir}/fom.{scenario}.{geog}.csv")
+#dont know how to make this work^^
+
+df_cambium = pd.read_csv('/Users/lpeterso/dwind/Cambium_FIPS.csv')
+df_cambium['County FIPS'] = df_cambium['County FIPS'].astype(str)
+df_cambium['State FIPS'] = df_cambium['State FIPS'].astype(str)
+df_cambium['GEOID'] = '0'
+for i in range(len(df_cambium)):
+  if len(df_cambium.loc[i, 'County FIPS']) ==1:
+    df_cambium.loc[i, 'GEOID'] = df_cambium.loc[i, 'State FIPS'] + '00' + df_cambium.loc[i, 'County FIPS']
+  if len(df_cambium.loc[i, 'County FIPS']) ==2:
+    df_cambium.loc[i, 'GEOID'] = df_cambium.loc[i, 'State FIPS'] + '0' + df_cambium.loc[i, 'County FIPS']
+  if len(df_cambium['County FIPS'][i]) ==3:
+    df_cambium.loc[i, 'GEOID'] = df_cambium.loc[i, 'State FIPS'] + df_cambium.loc[i, 'County FIPS']
+  if len(df_cambium.loc[i, 'State FIPS']) ==1:
+    df_cambium.loc[i, 'GEOID'] = '0' + df_cambium.loc[i, 'GEOID']
+df_cambium['County'] = df_cambium['County'] + ", " + df_cambium['State']
+
+df["tech_aep_twh"] = df["aep_kwh_sum_gte0"]*1e-9 #df["aep_sum_kwh"]*1e-9 #use aep_sum_kwh for 2025 runs
+
+decoder_ring = pd.read_csv("state_and_county_fips_master.csv")
+df = decoder_ring.rename(columns={"fips":"GEOID"}).merge(df,how='right') #2025 runs: geoid
+df['GEOID'] = df['GEOID'].astype(str).str.zfill(5)
+df = pd.merge(df, df_cambium[['GEOID', 'Cambium GEA']], on = 'GEOID', how = 'left')
+
+df['emissions'] = 0
+df['LRMER'] = df['Cambium GEA'].map(LRMER_levelized)
+df['emissions'] = df['tech_aep_twh'] * df['LRMER']
+
+gea_categories = df_cambium["Cambium GEA"].unique()
+
+from urllib.request import urlopen
+import json
+with urlopen('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json') as response:
+    counties = json.load(response)
+
+bins = [0, 40, 80, 120, 160, 200]
+labels = ['0-40', '40-80', '80-120', '120-160', '160-200']
+df['LRMER_category'] = pd.cut(df['LRMER'], bins=bins, labels=labels)
+df['LRMER_category'] = pd.Categorical(
+    df['LRMER_category'], 
+    categories=labels, 
+    ordered=True
+)
+df = df.sort_values('LRMER_category')
+df['county'] = df['name'] + ", " + df['state']
+
+# Define a discrete color map
+
+color_map = { #gp1
+    '0-40': '#1F449C',   # Dark Blue  
+    '40-80': '#7CA1CC',  # Light Blue  
+    '80-120': '#A8B6CC', # gray
+    '120-160': '#EEBAB4', # Light Orange-Red  
+    '160-200': '#e57a77', # Bright Red  
+}
+
+fig2 = px.choropleth_map(df, geojson=counties, locations='GEOID', color='LRMER_category',
+                           color_discrete_map=color_map,
+                           map_style='white-bg',
+                           zoom=2.9, center = {"lat": 37.0902, "lon": -95.7129},
+                           labels={'LRMER_category': 'LRMER [ktCO2/TWh]'},
+                           hover_data={'county':True, 'GEOID':False}
+                          )
+fig2.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+fig2.show()
+```
+
+To begin this analysis, distributed wind model output is first processed. 
+
+Then, the cost-viable AEP of a given county is multiplied by the LRMER associated with that county, based on its corresponding GEA region, to yield an emissions offset potential estimate (gCO2) for every contiguous United States county.
+
+Cambium 2023 can be calibrated to yield LRMER values subject to certain input assumptions. Here, the LRMER reflects CO2 emissions created during combustion in the mid-case Cambium scenario, where emissions are evaluated over a 20 year period with a 3% discount rate. The LRMER calculation determines rates based on the end-use location. More details regarding Cambium 2023 and LRMER are available in the Cambium 2023 LRMER workbook (https://data.nrel.gov/submissions/230) and Cambium 2023 documentation (https://www.nrel.gov/docs/fy24osti/88507.pdf).
+
+Cambium 2023 provides LRMER estimates for start years ranging between 2025 and 2037. Therefore, 2022 distributed wind data cannot be perfectly matched to a LRMER start year. Instead, the 2025 LRMER calculation is matched to the 2022 distributed wind model output, and the 2035 LRMER calculation and distributed wind model output are matched.
+
+### BTM, low fidelity, 2025, techpot
+
+```{python}
+
+bins = [float('-inf'), 0.025, 0.05, 0.075, 0.1, float('inf')]
+labels = ['<0.025', '0.025-0.05', '0.05-0.075', '0.075-0.1', '>0.1']
+df['tech_aep_twh_category'] = pd.cut(df['tech_aep_twh'], bins=bins, labels=labels)
+df['tech_aep_twh_category'] = pd.Categorical(
+    df['tech_aep_twh_category'], 
+    categories=labels, 
+    ordered=True
+)
+df = df.sort_values('tech_aep_twh_category')
+df['county'] = df['name'] + ", " + df['state']
+
+color_map2 = {
+    '<0.025': '#440154',  # Dark Purple
+    '0.025-0.05': '#31688e', # Teal-Blue
+    '0.05-0.075': '#35b779', # Green
+    '0.075-0.1': '#fde725', # Yellow
+    '>0.1': '#f9d423',  # Bright Yellow
+}
+
+#fix this
+aep = px.choropleth_map(df, geojson=counties, locations='GEOID', color='tech_aep_twh',
+                           color_discrete_map=color_map2,
+                           map_style='white-bg',
+                           zoom=2.9, center = {"lat": 37.0902, "lon": -95.7129},
+                           labels={'tech_aep_twh': 'Tech Viable AEP [TWh]'},
+                           hover_data={'county':True, 'GEOID':False}
+                          )
+aep.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+aep.show()
+
+bins = [float('-inf'), 1, 5, 10, 20, 40, 60, 80, 100, 150, float('inf')]
+labels = ['<1', '1-5', '5-10', '10-20', '20-40', '40-60', '60-80', '80-100', '100-150', '>150']
+df['emissions_category'] = pd.cut(df['emissions'], bins=bins, labels=labels)
+df['emissions_category'] = pd.Categorical(
+    df['emissions_category'], 
+    categories=labels, 
+    ordered=True
+)
+df = df.sort_values('emissions_category')
+
+white_to_blue = {
+    '<1':    '#ffffff',   # White
+    '1-5':  '#ffffd9',   
+    '5-10': '#edf8b1',   
+    '10-20': '#c7e9b4',   
+    '20-40': '#7fcdbb',   
+    '40-60': '#41b6c4',   
+    '60-80': '#1d91c0',   
+    '80-100': '#225ea8',   
+    '100-150': '#253494',   
+    '>150':   '#081d58',   # Deep Red
+}
+
+fig6 = px.choropleth_map(df, geojson=counties, locations='GEOID', color='emissions_category',
+                           color_discrete_map=white_to_blue,
+                           map_style='white-bg',
+                           zoom=2.9, center = {"lat": 37.0902, "lon": -95.7129},
+                           opacity=1.0,
+                           labels={'emissions_category': 'Offset potential [ktCO2]', 'emissions': 'Emissions Reduction Potential [%]', 'tech_aep_twh': 'Cost Viable AEP [TWh]'},
+                           hover_data={'tech_aep_twh': ':.2f', 'emissions': ':.2f', 'GEOID': False, 'county':True}
+                          )
+fig6.update_layout(
+    margin={"r": 0, "t": 0, "l": 0, "b": 0},
+)
+fig6.show()
+```
+
+### BTM, high fidelity, 2025, techpot
+
+```{python}
+
+bins = [float('-inf'), 1, 5, 10, 20, 40, 60, 80, 100, 150, float('inf')]
+labels = ['<1', '1-5', '5-10', '10-20', '20-40', '40-60', '60-80', '80-100', '100-150', '>150']
+
+highfid = pd.read_csv('/Users/lpeterso/dwind/county_emissions_btm_correct_sept11.csv')
+highfid["emissions"] = highfid["emissions"] * 1e-9 #added an extra 1e-3 because we're looking @ kwh in kestrel code now 
+
+highfid['emissions_category'] = pd.cut(highfid['emissions'], bins=bins, labels=labels)
+highfid['emissions_category'] = pd.Categorical(
+    highfid['emissions_category'], 
+    categories=labels, 
+    ordered=True
+)
+highfid = highfid.sort_values('emissions_category')
+
+for i in range(len(highfid)):
+    highfid.loc[i, 'countyfp'] = "{:05d}".format(highfid.loc[i, 'countyfp'])
+
+fig7 = px.choropleth_map(highfid, geojson=counties, locations='countyfp', color='emissions_category',
+                           color_discrete_map=white_to_blue,
+                           map_style='white-bg',
+                           zoom=2.9, center = {"lat": 37.0902, "lon": -95.7129},
+                           opacity=1.0,
+                           labels={'emissions_category': 'Offset potential [ktCO2]'},
+                           hover_data={'emissions': ':.2f', 'countyfp':True, 'emissions_category':False}
+                          )
+fig7.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+fig7.show()
+```
+
+It's unsurprising that the higher fidelity model predicts lower emissions offset potential. This model clarifies the overlap between dwind generation and lower emissions periods (ie, when wind resource is high and existing wind capacity is generating energy to meet load).
+
+Problem: Cambium assumes 2012 weather, but dwind high fidelity results assume 2018. It will require another kestrel run to not only specify 2012 weather data, but to also yield econpot results and run time series analysis on each county to pick the extremes. I will also need to check whether the post processed dwind data is run with 2012 or 2018 weather. 
+
+### Mapping the Difference
+
+```{python}
+
+diff = pd.merge(df[['GEOID', 'emissions']], highfid[['countyfp', 'emissions']], left_on='GEOID', right_on = 'countyfp', suffixes=('_lowfid', '_highfid'))
+diff['emissions_diff'] = diff['emissions_lowfid'] - diff['emissions_highfid']
+
+magma_colors = {
+    '<1': "#0d0887",  # dark blue
+    '1-2.5': "#440154",  # darkviolet
+    '2.5-5': "#9e179e",  # Deep Purple
+    '5-7.5': "#dc5c68",  # pinkish red
+    '>7.5': "#f0f921"   # bright yellow
+}
+
+bins = [-float('inf'), 1, 2.5, 5, 7.5, float('inf')]
+labels = ['<1', '1-2.5', '2.5-5', '5-7.5', '>7.5']
+diff['categories'] = pd.cut(diff['emissions_diff'], bins=bins, labels=labels)
+diff['categories'] = pd.Categorical(
+    diff['categories'], 
+    categories=labels, 
+    ordered=True
+)
+diff = diff.sort_values('categories')
+
+fig8 = px.choropleth_map(diff, geojson=counties, locations='countyfp', color='categories',
+                           color_discrete_map=magma_colors,
+                           map_style='white-bg',
+                           zoom=2.9, center = {"lat": 37.0902, "lon": -95.7129},
+                           opacity=0.7,
+                           labels={'categories':'difference [ktCO2]', 'emissions_diff': 'difference in models', 'emissions_highfid': 'high fidelity emissions', 'emissions_lowfid': 'low fidelity emissions'},
+                           hover_data={'emissions_diff': ':.2f', 'emissions_highfid':True, 'emissions_lowfid':True, 'categories':False}
+                          )
+fig8.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+fig8.show()
+```
+
+### Cosine Similarity: Monthly
+
+```{python}
+
+custom_scale = [
+    [0.0, '#8B0000'],          # min → dark red
+    [0.5, '#FFFFFF'],  # 0 → white
+    [1.0, '#0000FF']           # max → dark blue
+]
+
+fig9 = px.choropleth_map(highfid, geojson=counties, locations='countyfp', color='month_cs',
+                           color_continuous_scale = custom_scale,
+                           range_color=[-1,1],
+                           map_style='white-bg',
+                           zoom=2.9, center = {"lat": 37.0902, "lon": -95.7129},
+                           labels = {'cs_month':'cosine similarity'},
+                          )
+fig9.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+fig9.show()
+```
+
+### Cosine Similarity: Hourly
+
+```{python}
+
+custom_scale = [
+    [0.0, '#8B0000'],          # min → dark red
+    [0.5, '#FFFFFF'],  # 0 → white
+    [1.0, '#0000FF']           # max → dark blue
+]
+
+fig9 = px.choropleth_map(highfid, geojson=counties, locations='countyfp', color='hour_cs',
+                           color_continuous_scale = custom_scale,
+                           range_color=[-1,1],
+                           map_style='white-bg',
+                           zoom=2.9, center = {"lat": 37.0902, "lon": -95.7129},
+                          )
+fig9.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+fig9.show()
+```

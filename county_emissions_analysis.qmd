@@ -1,0 +1,413 @@
+---
+title: "County-Level Emissions Analysis"
+format:
+  html:
+    code-fold: true
+    embed-resources: true
+jupyter: dwind
+---
+
+In this workbook, emissions offset potential for each county in the lower 48 states is estimated for a given level of distributed wind deployment using the long-run marginal emissions rate, or LRMER.
+
+The LRMER is an indication of the rate of emissions offset potential associated with marginal grid demand reduction. The LRMER is measured in grams CO2 per MWh. Here, an annualized average LRMER (specific to generating regions across the US) is multiplied by the annual energy production of distributed wind resources given a potential deployment scenario. In other words, distributed wind generation reduces grid demand, and the emissions impacts can be quantified using LRMER and AEP.
+
+The LRMER is calculated for 18 generation and emissions assessment (GEA) regions across the contiguous United States by Cambium 2023, an NREL model (https://www.nrel.gov/analysis/cambium.html). AEP data summed by county is retrieved from the NREL distributed wind model, which is then multiplied by the LRMER from the county's respective GEA. The following table lists LRMER values for each GEA in Cambium 2023.
+
+```{python}
+import pandas as pd
+import plotly.express as px
+import plotly.io as pio
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
+
+btmfom="btm"
+data_dir=f"data/{btmfom}"
+scenario="baseline_2035"
+geog="counties"
+
+if scenario == "baseline_2022":
+  LRMER_levelized = { #units kilotons CO2 per TWh at the point of enduse. from Cambium 2023 LRMER workbook
+      "CAISO": 95.2,
+      "ERCOT": 114.1,
+      "FRCC": 249.9,
+      "ISONE": 136.4,
+      "MISO_Central": 231.1,
+      "MISO_North": 141.7,
+      "MISO_South": 185.9,
+      "NorthernGrid_East": 142.3,
+      "NorthernGrid_South": 121.5,
+      "NorthernGrid_West": 38.7,
+      "NYISO": 124.4,
+      "PJM_East": 255.8,
+      "PJM_West": 166.4,
+      "SERTP": 235.3,
+      "SPP_North": 198.3,
+      "SPP_South": 169.1,
+      "WestConnect_North": 181.7,
+      "WestConnect_South": 138.5
+  }
+
+if scenario == 'baseline_2035':
+  LRMER_levelized = { #units kgCO2 per kWh at the point of enduse. from Cambium 2023 LRMER workbook
+      "CAISO": .0282,
+      "ERCOT": .0806,
+      "FRCC": .2056,
+      "ISONE": .0637,
+      "MISO_Central": .1355,
+      "MISO_North": .0935,
+      "MISO_South": .1063,
+      "NorthernGrid_East": .1239,
+      "NorthernGrid_South": .0868,
+      "NorthernGrid_West": .0256,
+      "NYISO": .0234,
+      "PJM_East": .1897,
+      "PJM_West": .0769,
+      "SERTP": .1333,
+      "SPP_North": .0934,
+      "SPP_South": .1045,
+      "WestConnect_North": .0928,
+      "WestConnect_South": .1008
+  }
+
+df_LRMER = pd.DataFrame(list(LRMER_levelized.items()), columns=["GEA", "LRMER (kgCO2/kWh)"])
+df_LRMER
+
+```
+
+Please note that annualized LRMER values are modeled estimates with lower fidelity than daily or hourly marginal emissions rate data. This notebook was created for the purpose of comparative emissions analysis across counties, and resulting emissions potential estimates are best interpreted in this context. These preliminary results update our [2022 study](https://www.nrel.gov/analysis/distributed-wind-futures.html).
+
+Cambium GEA regions are also displayed spatially, for clarification of the table shown above.
+
+```{python}
+
+# import dataset
+df = pd.read_csv(f"{data_dir}/{btmfom}.{scenario}.{geog}.csv")
+
+df_cambium = pd.read_csv('/Users/lpeterso/dwind/Cambium_FIPS.csv')
+df_cambium['County FIPS'] = df_cambium['County FIPS'].astype(str)
+df_cambium['State FIPS'] = df_cambium['State FIPS'].astype(str)
+df_cambium['GEOID'] = '0'
+for i in range(len(df_cambium)):
+  if len(df_cambium.loc[i, 'County FIPS']) ==1:
+    df_cambium.loc[i, 'GEOID'] = df_cambium.loc[i, 'State FIPS'] + '00' + df_cambium.loc[i, 'County FIPS']
+  if len(df_cambium.loc[i, 'County FIPS']) ==2:
+    df_cambium.loc[i, 'GEOID'] = df_cambium.loc[i, 'State FIPS'] + '0' + df_cambium.loc[i, 'County FIPS']
+  if len(df_cambium['County FIPS'][i]) ==3:
+    df_cambium.loc[i, 'GEOID'] = df_cambium.loc[i, 'State FIPS'] + df_cambium.loc[i, 'County FIPS']
+  if len(df_cambium.loc[i, 'State FIPS']) ==1:
+    df_cambium.loc[i, 'GEOID'] = '0' + df_cambium.loc[i, 'GEOID']
+df_cambium['County'] = df_cambium['County'] + ", " + df_cambium['State']
+
+from urllib.request import urlopen
+import json
+with urlopen('https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json') as response:
+    counties = json.load(response)
+
+# Create a categorical color map
+gea_categories = df_cambium["Cambium GEA"].unique()
+custom_colors = [
+    "#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00",
+    "#ffff33", "#a65628", "#f781bf", "#999999", "#66c2a5",
+    "#fc8d62", "#8da0cb", "#FF00FF", "#a6d854", "#ffd92f",
+    "#e5c494", "#4B0082", "#f2f2f2"
+]
+color_map = {gea: custom_colors[i] for i, gea in enumerate(gea_categories)}
+
+fig1 = px.choropleth_map(df_cambium, geojson=counties, locations='GEOID', color='Cambium GEA',
+                           color_discrete_map=color_map,
+                           range_color=(0, 800),
+                           map_style='white-bg',
+                           zoom=2.9, center = {"lat": 37.0902, "lon": -95.7129},
+                           hover_data=['County'] 
+                          )
+fig1.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+fig1.show()
+```
+
+### Front of Meter
+
+To begin this analysis, distributed wind model output is first processed. 
+
+```{python} 
+
+df["aep_twh"] = df["aep_kwh_sum_gte0"]*1e-9
+df["econ_aep_twh"] = df["cost_viable_true_aep_kwh_sum"]*1e-9
+
+decoder_ring = pd.read_csv("state_and_county_fips_master.csv")
+df = decoder_ring.rename(columns={"fips":"GEOID"}).merge(df,how='right')
+
+df["n_parcels"] = df["n_parcels"].astype('int')
+df['GEOID'] = df['GEOID'].astype(str).str.zfill(5)
+df = pd.merge(df, df_cambium[['GEOID', 'Cambium GEA']], on = 'GEOID', how = 'left')
+```
+
+Then, the cost-viable AEP of a given county is multiplied by the LRMER associated with that county, based on its corresponding GEA region, to yield an emissions offset potential estimate (gCO2) for every contiguous United States county.
+
+```{python}
+df['emissions'] = 0
+df['LRMER'] = df['Cambium GEA'].map(LRMER_levelized)
+df['emissions'] = df['econ_aep_twh'] * df['LRMER']
+```
+
+Next, emissions offset potential estimates are visualized in a heat map of the U.S.
+
+```{python}
+bins = [0, 50, 100, 150, 200, 250, float('inf')]
+labels = ['0-50', '50-100', '100-150', '150-200', '200-250', '>250']
+df['LRMER_category'] = pd.cut(df['LRMER'], bins=bins, labels=labels)
+df['LRMER_category'] = pd.Categorical(
+    df['LRMER_category'], 
+    categories=labels, 
+    ordered=True
+)
+df = df.sort_values('LRMER_category')
+df['county'] = df['name'] + ", " + df['state']
+
+# Define a discrete color map
+
+color_map = { #original
+    '0-50': '#2b83ba',   # Dark Blue  
+    '50-100': '#92c5de',  # Light Blue  
+    '100-150': '#f7f7f7', # Neutral White  
+    '150-200': '#f4a582', # Light Orange-Red  
+    '200-250': '#d73027', # Bright Red  
+    '>250': '#a50026',    # Dark Red  
+}
+
+color_map = { #gp1
+    '0-50': '#1F449C',   # Dark Blue  
+    '50-100': '#7CA1CC',  # Light Blue  
+    '100-150': '#A8B6CC', # gray
+    '150-200': '#EEBAB4', # Light Orange-Red  
+    '200-250': '#e57a77', # Bright Red  
+    '>250': '#F05039',    # Dark Red  
+}
+
+fig2 = px.choropleth_map(df, geojson=counties, locations='GEOID', color='LRMER_category',
+                           color_discrete_map=color_map,
+                           map_style='white-bg',
+                           zoom=2.9, center = {"lat": 37.0902, "lon": -95.7129},
+                           labels={'LRMER_category': 'LRMER [ktCO2/TWh]'},
+                           hover_data={'county':True, 'GEOID':False}
+                          )
+fig2.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+fig2.show()
+
+bins = [float('-inf'), 0.1, 1, 5, 10, float('inf')]
+labels = ['<0.1', '0.1-1', '1-5', '5-10', '>10']
+df['econ_aep_twh_category'] = pd.cut(df['econ_aep_twh'], bins=bins, labels=labels)
+df['econ_aep_twh_category'] = pd.Categorical(
+    df['econ_aep_twh_category'], 
+    categories=labels, 
+    ordered=True
+)
+df = df.sort_values('econ_aep_twh_category')
+
+magma_colors = {
+    '<0.1': "#0d0887",  # dark blue
+    '0.1-1': "#440154",  # darkviolet
+    '1-5': "#9e179e",  # Deep Purple
+    '5-10': "#dc5c68",  # pinkish red
+    '>10': "#f0f921"   # bright yellow
+}
+
+fig3 = px.choropleth_map(df, geojson=counties, locations='GEOID', color='econ_aep_twh_category',
+                           color_discrete_map=magma_colors,
+                           map_style='white-bg',
+                           zoom=2.9, center = {"lat": 37.0902, "lon": -95.7129},
+                           labels={'econ_aep_twh_category': 'Cost Viable AEP [TWh]', 'econ_aep_twh': 'Cost Viable AEP [TWh]'},
+                           hover_data={'econ_aep_twh': ':.2f', 'county':True, 'GEOID':False}
+                          )
+fig3.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+fig3.show()
+
+bins = [float('-inf'), 10, 300, 600, 900, float('inf')]
+labels = ['<10', '10-300', '300-600', '600-900', '>900']
+df['emissions_category'] = pd.cut(df['emissions'], bins=bins, labels=labels)
+df['emissions_category'] = pd.Categorical(
+    df['emissions_category'], 
+    categories=labels, 
+    ordered=True
+)
+df = df.sort_values('emissions_category')
+
+#change this one
+white_to_purple = {
+    '<10': "#ffffff",  # Pure White  
+    '10-300': "#f2e0f7",  # Very Light Lavender  
+    '300-600': "#d29ce0",  # Soft Purple  
+    '600-900': "#9e179e",  # Deep Purple (Matches Magma)  
+    '>900': "#440154",  # Dark Violet (Matches Magma)  
+}
+
+fig4 = px.choropleth_map(df, geojson=counties, locations='GEOID', color='emissions_category',
+                           color_discrete_map=white_to_purple,
+                           map_style='white-bg',
+                           zoom=2.9, center = {"lat": 37.0902, "lon": -95.7129},
+                           labels={'emissions_category': 'Offset potential [ktCO2]', 'emissions': 'Emissions Reduction Potential [%]', 'econ_aep_twh': 'Cost Viable AEP [TWh]'},
+                           hover_data={'econ_aep_twh': ':.2f', 'emissions': ':.2f', 'emissions_category': False, 'GEOID': False, 'county':True}
+                          )
+fig4.update_layout(
+    margin={"r": 0, "t": 0, "l": 0, "b": 0},
+)
+fig4.show()
+```
+
+Next, states are ranked by emissions offsets potential. To do so, county emissions calculations are aggregated. DC is included while Hawaii and Alaska are excluded from this ranking.
+
+FOM nationwide statistics are also calculated, and are tabulated in a later section.
+
+```{python}
+# Aggregate emissions by state
+state_emissions_fom = df.groupby('state')['emissions'].sum().reset_index()
+
+# Rank states by emissions
+state_emissions_fom = state_emissions_fom.sort_values(by='emissions', ascending=False).reset_index(drop=True)
+state_emissions_fom['Rank'] = state_emissions_fom.index + 1
+state_emissions_fom = state_emissions_fom[['Rank'] + ['state'] + ['emissions']]
+state_emissions_fom.columns = ['Rank', 'FOM State', 'FOM Emissions Offsets [ktCO2]']
+
+country_emissions_fom = (df['emissions'].sum()).astype(int)
+country_emissions_25_fom = (country_emissions_fom * 0.25).astype(int)
+country_emissions_50_fom = (country_emissions_fom * 0.5).astype(int)
+country_emissions_75_fom = (country_emissions_fom * 0.75).astype(int)
+
+```
+
+Cambium 2023 can be calibrated to yield LRMER values subject to certain input assumptions. Here, the LRMER reflects CO2 emissions created during combustion in the mid-case Cambium scenario, where emissions are evaluated over a 20 year period with a 3% discount rate. The LRMER calculation determines rates based on the end-use location. More details regarding Cambium 2023 and LRMER are available in the Cambium 2023 LRMER workbook (https://data.nrel.gov/submissions/230) and Cambium 2023 documentation (https://www.nrel.gov/docs/fy24osti/88507.pdf).
+
+Cambium 2023 provides LRMER estimates for start years ranging between 2025 and 2037. Therefore, 2022 distributed wind data cannot be perfectly matched to a LRMER start year. Instead, the 2025 LRMER calculation is matched to the 2022 distributed wind model output, and the 2035 LRMER calculation and distributed wind model output are matched.
+
+### Behind the Meter 
+
+The above steps can be repeated for the distributed wind BTM modeled output.
+
+```{python}
+
+btmfom="btm"
+scenario="baseline_2022"
+data_dir=f"data/{btmfom}"
+geog="counties"
+
+df = pd.read_csv(f"{data_dir}/{btmfom}.{scenario}.{geog}.csv")
+
+df["aep_twh"] = df["aep_kwh_sum_gte0"]*1e-9
+df["econ_aep_twh"] = df["cost_viable_true_aep_kwh_sum"]*1e-9
+
+decoder_ring = pd.read_csv("state_and_county_fips_master.csv")
+df = decoder_ring.rename(columns={"fips":"GEOID"}).merge(df,how='right')
+df["n_parcels"] = df["n_parcels"].astype('int')
+df['GEOID'] = df['GEOID'].astype(str).str.zfill(5)
+df = pd.merge(df, df_cambium[['GEOID', 'Cambium GEA']], on = 'GEOID', how = 'left')
+
+df['emissions'] = 0
+df['LRMER'] = df['Cambium GEA'].map(LRMER_levelized)
+df['emissions'] = df['econ_aep_twh'] * df['LRMER']
+```
+
+```{python}
+
+bins = [float('-inf'), 0.025, 0.05, 0.075, 0.1, float('inf')]
+labels = ['<0.025', '0.025-0.05', '0.05-0.075', '0.075-0.1', '>0.1']
+df['econ_aep_twh_category'] = pd.cut(df['econ_aep_twh'], bins=bins, labels=labels)
+df['econ_aep_twh_category'] = pd.Categorical(
+    df['econ_aep_twh_category'], 
+    categories=labels, 
+    ordered=True
+)
+df = df.sort_values('econ_aep_twh_category')
+df['county'] = df['name'] + ", " + df['state']
+
+color_map2 = {
+    '<0.025': '#440154',  # Dark Purple
+    '0.025-0.05': '#31688e', # Teal-Blue
+    '0.05-0.075': '#35b779', # Green
+    '0.075-0.1': '#fde725', # Yellow
+    '>0.1': '#f9d423',  # Bright Yellow
+}
+
+fig5 = px.choropleth_map(df, geojson=counties, locations='GEOID', color='econ_aep_twh_category',
+                           color_discrete_map=color_map2,
+                           map_style='white-bg',
+                           zoom=2.9, center = {"lat": 37.0902, "lon": -95.7129},
+                           labels={'econ_aep_twh_category': 'Cost Viable AEP [TWh]', 'econ_aep_twh': 'Cost Viable AEP [TWh]'},
+                           hover_data={'econ_aep_twh': ':.2f', 'county':True, 'GEOID':False}
+                          )
+fig5.update_layout(
+    margin={"r": 0, "t": 0, "l": 0, "b": 0},
+)
+fig5.show()
+
+bins = [float('-inf'), 5, 10, 15, 20, float('inf')]
+labels = ['<5', '5-10', '10-15', '15-20', '>20']
+df['emissions_category'] = pd.cut(df['emissions'], bins=bins, labels=labels)
+df['emissions_category'] = pd.Categorical(
+    df['emissions_category'], 
+    categories=labels, 
+    ordered=True
+)
+df = df.sort_values('emissions_category')
+
+white_to_blue = {
+    '<5': "#ffffff",  # Pure White  
+    '5-10': "#dbe9f6",  # Very Light Sky Blue  
+    '10-15': "#89c2e4",  # Soft Blue  
+    '15-20': "#31688e",  # Teal-Blue (Matches Viridis)  
+    '>20': "#440154",  # Dark Purple (Matches Viridis)  
+}
+
+fig6 = px.choropleth_map(df, geojson=counties, locations='GEOID', color='emissions_category',
+                           color_discrete_map=white_to_blue,
+                           map_style='white-bg',
+                           zoom=2.9, center = {"lat": 37.0902, "lon": -95.7129},
+                           labels={'emissions_category': 'Offset potential [ktCO2]', 'emissions': 'Emissions Reduction Potential [%]', 'econ_aep_twh': 'Cost Viable AEP [TWh]'},
+                           hover_data={'econ_aep_twh': ':.2f', 'emissions': ':.2f', 'GEOID': False, 'county':True}
+                          )
+fig6.update_layout(
+    margin={"r": 0, "t": 0, "l": 0, "b": 0},
+)
+fig6.show()
+```
+
+### Emissions Offsets: Aggregated and Tabulated Data
+
+Combining BTM and FOM statewide rankings, the following table provides insight regarding which states have the most emissions offset potential.
+
+```{python}
+# Aggregate emissions by state
+state_emissions_btm = df.groupby('state')['emissions'].sum().reset_index()
+
+# Rank states by emissions
+state_emissions_btm = state_emissions_btm.sort_values(by='emissions', ascending=False).reset_index(drop=True)
+state_emissions_btm['Rank'] = state_emissions_btm.index + 1
+state_emissions_btm = state_emissions_btm[['Rank'] + ['state'] + ['emissions']]
+state_emissions_btm.columns = ['Rank', 'BTM State', 'BTM Emissions Offsets [ktCO2]']
+state_emissions = pd.concat([state_emissions_btm['Rank'], state_emissions_btm['BTM State'], state_emissions_btm['BTM Emissions Offsets [ktCO2]'].astype(int), state_emissions_fom['FOM State'], state_emissions_fom['FOM Emissions Offsets [ktCO2]'].astype(int)], axis=1)
+state_emissions = state_emissions.style.format({col: "{:,}" for col in state_emissions.select_dtypes(include=['number']).columns})
+
+from IPython.display import display, HTML
+display(HTML(state_emissions.to_html(index=False)))
+```
+
+Nationwide emissions offsets can also be calculated for various levels of deployment. In the following table, offsets are estimated for 25%, 50%, 75%, and 100% deployment scenarios, for both BTM and FOM deployment. 
+
+Initial offset estimates are provided by simply multiplying the county-level AEP with the corresponding deployment factor (e.g., 25%, 50%, 75%). Future work will incorporate more robust adoption modeling strategies to model levels of deployment with higher fidelity.
+
+```{python}
+country_emissions_btm = (df['emissions'].sum()).astype(int)
+country_emissions_25_btm = (country_emissions_btm * 0.25).astype(int)
+country_emissions_50_btm = (country_emissions_btm * 0.5).astype(int)
+country_emissions_75_btm = (country_emissions_btm * 0.75).astype(int)
+
+data = {
+    "Level of Deployment": ["100%", "75%", "50%", "25%"],
+    "BTM Nationwide Emissions Offsets [ktCO2]": [country_emissions_btm, country_emissions_75_btm, country_emissions_50_btm, country_emissions_25_btm],
+    "FOM Nationwide Emissions Offsets [ktCO2]": [country_emissions_fom, country_emissions_75_fom, country_emissions_50_fom, country_emissions_25_fom]
+}
+
+# Create the DataFrame
+emissions_table = pd.DataFrame(data)
+emissions_table = emissions_table.style.format({col: "{:,}" for col in emissions_table.select_dtypes(include=['number']).columns})
+display(HTML(emissions_table.to_html(index=False)))
+``` 
